@@ -1,0 +1,332 @@
+---
+title: "CAMPD API"
+author: "Nick Sayresmith"
+date: last-modified
+format: 
+  html: 
+    toc: true
+    toc-location: right
+    number-sections: true
+    code-fold: true
+    code-tools: true
+    fig-width: 8
+    fig-asp: 0.618
+    out-width: "70%"
+    fig-align: center
+    fig-format: png
+    embed-resources: true
+execute:
+  echo: true
+  warning: false
+editor_options: 
+  chunk_output_type: console
+---
+
+Demonstration of CAMPD API workflow adapted from CAMD's bulk example on their [GitHub](https://github.com/USEPA/cam-api-examples/blob/main/R/bulk_data_api_demo.R). CAMD requests that the bulk data api be used when trying to access a lot of data (e.g., a years worth of hourly emissions data). There are 2 endpoints relavent to the bulk file api:
+
+1. **/bulk-files** returns metadata about files
+2. **/easey/bulk-files** is used to access the actual file
+
+Their example is a little dated (httr has been superseded by httr2), and I use more tidyverse. Further API documentation found [here](https://www.epa.gov/power-sector/cam-api-portal#/documentation).
+
+May want to exclude low mass emission (LME) units that use calculated methods from analysis. In contrast to measured/CEMs units, LME units using the calculation methodology merely estimate emissions based on emission factors and fuel type.
+
+## Background on CAMD and their CAMPD API
+
+According to their [guide](https://www.epa.gov/system/files/documents/2022-07/CAMD%27s%20Power%20Sector%20Emissions%20Data%20Guide%20-%2007182022.pdf), CAMD collects Power Sector Emissions Data under regulations in 40 CFR Part 75. Affected electricity generating units (EGUs) refer to large (>25 MW), fossil-fuel firing turbines that generate electricity for sale, though there are exceptions. That said, CAMD's Power Sector Emissions Data covers ~96% of the fossil fuel generation in the U.S. (based on 2018 data). It should be noted, turbines that are not used to generate electricity and sell electricity (e.g., mechanical drive applications like natural gas compression and pumping) may not be in CAMPD. Nor would one expect to find small turbines (≤25 MW) either.
+
+Emissions are typically measured at the stack. There are at least 3 types of unit-stack setups: 1) 1 stack per unit, 2) multiple stacks per unit, and 3) 1 stack for multiple units. CAMD attempts to accurately apportion total stack emissions to each unit when applicable.
+
+Requirements for emissions monitoring depends on fuel type:
+
+![EGU Monitoring Options by Fuel Type](images/EGU_monitoring_fuel_type.png)
+
+Part 75 includes provisions for when monitors are not working properly. EGUs must apply substitute data to fill in data gaps. Table 4A of 40 CFR 75.57 describes how data should be substituted. The methodologies become increasingly conservative (i.e., overestimate actual emissions) based on length and frequency of missing data. This is to discourage under reporting. CAMPD does not indicate when data substitution has been used. 
+
+EGUs must report to the EPA their monitoring plans, QA tests, emissions, and operating data via a desktop program called the Emissions Collection and Monitoring Plan System (ECMPS). This data is made available in multiple ways including through the Field Audit Checklist Tool (FACT; retiring soon) and the Clean Air Markets Program Data (CAMPD). This analysis uses the CAMPD API.
+
+![Data Flow Diagram from CAMD's Power Section Emissions Data Guide](images/CAMD_workflow.png)
+
+## Libraries
+
+```{r}
+#| label: libraries
+
+library(tidyverse)
+library(here)
+library(httr2)
+library(tidyverse)
+library(readxl)
+library(magrittr)
+library(knitr)
+```
+
+## CAMPD Request
+
+Using CAMPD API to request the CAMPD file list. Response is converted from json to tibble.
+
+```{r}
+#| label: CAMPD-urlbase
+
+urlbase_CAMPD <- "https://api.epa.gov/easey/"
+urlbulk_CAMPD <- "camd-services/bulk-files?API_KEY="
+```
+
+```{r}
+#| label: CAMPD-req-resp
+#| cache: true
+
+req_CAMPD <- request(str_c(urlbase_CAMPD,
+                           urlbulk_CAMPD,
+                           Sys.getenv("API_KEY")
+                           )
+                     )
+
+# req_CAMPD %>% req_dry_run()
+
+resp_CAMPD <- req_CAMPD %>% req_perform()
+
+tb_CAMPD_files <- resp_CAMPD %>% 
+  resp_body_json(simplifyVector = T) %>% 
+  as_tibble() %>% 
+  unnest(metadata) %>% 
+  mutate(across(c(year, quarter, bytes), as.numeric),
+         lastUpdated = as_date(lastUpdated)
+         )
+```
+
+## CAMPD Files Data Exploration
+
+Trying to understand how response requests are structured.
+
+```{r}
+#| label: tbl-CAMPD-files-summary
+#| tbl-cap: "Summary of available CAMPD data and storage structure"
+
+tb_CAMPD_files_summary <- tb_CAMPD_files %>% 
+  group_by(dataType, dataSubType) %>% 
+  summarize(n_file = n())
+
+kable(tb_CAMPD_files_summary)
+```
+
+Exploring XML Emissions.
+```{r}
+#| label: tb-XML
+#| eval: false
+
+tb_CAMPD_files %>% 
+  filter(dataType == "XML") %>% 
+  filter(dataSubType == "Emissions") %>% 
+  filter(year == 2023) %>% 
+  arrange(stateCode, filename, quarter) %>% 
+  view("filtered_CAMPD")
+```
+
+Exploring Emissions Hourly.
+```{r}
+#| label: tb-Emissions
+#| eval: false
+
+tb_CAMPD_files %>% 
+  filter(dataType == "Emissions") %>% 
+  filter(dataSubType == "Hourly") %>% 
+  filter(year == 2023) %>% 
+  arrange(stateCode, filename, quarter) %>% 
+  view("filtered_CAMPD")
+```
+
+Exploring Facility.
+```{r}
+#| label: tb-Facility
+#| eval: false
+
+tb_CAMPD_files %>% 
+  filter(dataType == "Facility") %>% 
+  # filter(dataSubType == "Hourly") %>% 
+  # filter(year == 2023) %>% 
+  arrange(stateCode, filename, quarter) %>% 
+  view("filtered_CAMPD")
+```
+
+Exploring Allowance.
+```{r}
+#| label: tb-Allowance
+#| eval: false
+
+tb_CAMPD_files %>% 
+  filter(dataType == "Allowance") %>% 
+  # filter(dataSubType == "Hourly") %>% 
+  # filter(year == 2023) %>% 
+  arrange(stateCode, filename, quarter) %>% 
+  view("filtered_CAMPD")
+```
+
+Exploring EDR.
+```{r}
+#| label: tb-EDR
+#| eval: false
+
+tb_CAMPD_files %>% 
+  filter(dataType == "EDR") %>% 
+  # filter(dataSubType == "Hourly") %>% 
+  # filter(year == 2023) %>%
+  arrange(stateCode, filename, quarter) %>% 
+  slice_head(n = 20) %>% 
+  view("filtered_CAMPD")
+```
+
+There are `r n_distinct(tb_CAMPD_files_summary$dataType)` distinct data types in CAMPD that can be accessed by the API:
+
+1. [Allowance](https://www.epa.gov/power-sector/allowance-data) - Contains info on EPA CAMD's allowance trading programs. Aggregated by program code.
+2. Compliance - Contains facility compliance info based on allowance data.
+3. [EDR](https://api.epa.gov/easey/content-mgmt/campd/documents/ask-camd-qas-feb-2023.pdf) - Electronic Data Reporting. Outdated standard containing report prior to 2008
+4. Emissions - Emission data aggregated from the XMLs to either the state-year or quarter-year levels.
+5. Facility - Facility/unit attributes. No emission data.
+6. MATS - Data pertaining to MATS
+7. XML - raw XML files submitted by source to EPA and through ECMPS. Contains emissions, monitoring, and QA files separately.
+
+## CAMPD CSV Exploration
+
+I am not sure if the XML files are raw data or if they have undergone some amount of data QA/QC. As such, I think it would be better to use the Emissions files because they have definitely undergone QA/QC and are pre-aggregated to either the year-quarter or year-state level. 
+
+In terms of efficiency, I think that the year-state data offer the best balance between file size (RAM), number of files, post-read code execution, and organizational structure. For example, Q3 2023 Hourly Emissions data contains hourly emissions for all units over ~3 months, coming out to >2 GB. In the past, I have noticed significant slowdowns on my computer (16 GB RAM) when working with that much data. In contrast, the TX 2023 hourly emissions data is the largest of any state and is ~0.7 GB.
+
+Reading Emissions Hourly 2023 NC CSV directly from CAMPD API.
+```{r}
+#| label: read-csv
+#| eval: false
+#| cache: true
+
+tb_file_filter <- tibble(
+  dataType = "Emissions",
+  year = "2023",
+  stateCode = "NC",
+  # quarter = NA_character_,
+  dataSubType = "Hourly"
+)
+
+tb_path_CAMPD_hourly_NC_2023 <- tb_CAMPD_files %>% 
+  filter(dataType == tb_file_filter$dataType) %>% 
+  filter(year == tb_file_filter$year) %>% 
+  filter(stateCode == tb_file_filter$stateCode) %>% 
+  filter(dataSubType == tb_file_filter$dataSubType)
+
+tb_CAMPD_hourly_NC_2023 <-
+  read_csv(str_c(
+    urlbase_CAMPD,
+    "bulk-files/",
+    tb_path_CAMPD_hourly_NC_2023$s3Path
+  ))
+```
+
+Downloading Emissions Hourly 2023 NC CSV directly from CAMPD API.
+```{r}
+#| label: download-csv
+#| eval: false
+
+req_CAMPD_hourly_NC_2023 <- request(
+  str_c(urlbase_CAMPD,
+        "bulk-files/",
+        tb_path_CAMPD_hourly_NC_2023$s3Path
+        )
+  )
+
+resp_CAMPD_hourly_NC_2023 <- req_CAMPD_hourly_NC_2023 %>%
+  req_perform(path = here(str_c("data/",
+                                tb_path_CAMPD_hourly_NC_2023$filename
+                                )
+                          )
+              )
+```
+
+Downloading 2023 Facility Data.
+```{r}
+#| label: download-fac-2023
+#| eval: false
+
+tb_fac_2023 <- tb_CAMPD_files |> 
+  filter(dataType == "Facility") |> 
+  filter(year == 2023)
+
+req_fac_2023 <- request(
+  str_c(urlbase_CAMPD,
+        "bulk-files/",
+        tb_fac_2023$s3Path
+        )
+  )
+
+path_fac <- str_c(
+  "C:/Users/NSayresm/OneDrive - Environmental Protection Agency (EPA)/",
+  "ESG/NSPS_CTs/NSPS_code/input/CAMPD/facility/",
+  tb_fac_2023$filename
+)
+
+resp_fac_2023 <- req_fac_2023 %>%
+  req_perform(path = path_fac)
+```
+
+
+## Exploring API further
+
+The above code accesses information on all XMLs and CSVs available through CAMPD API and then reads/downloads the Hourly Emissions NC 2023 data as an example. However, the Hourly Emissions CSVs may contain much more info than I actually need. Here is an example of a workflow to pull only relevant data into R.
+
+```{r}
+#| label: tbl-read-headers
+#| tbl-cap: "Columns headers of Hourly Emissions data"
+#| cache: true
+
+tb_file_filter <- tibble(
+  dataType = "Emissions",
+  year = "2023",
+  stateCode = "NC",
+  # quarter = NA_character_,
+  dataSubType = "Hourly"
+)
+
+tb_path_CAMPD_hourly_NC_2023 <- tb_CAMPD_files %>% 
+  filter(dataType == tb_file_filter$dataType) %>% 
+  filter(year == tb_file_filter$year) %>% 
+  filter(stateCode == tb_file_filter$stateCode) %>% 
+  filter(dataSubType == tb_file_filter$dataSubType)
+
+ls_col_headers <- 
+  read_csv(
+    str_c(urlbase_CAMPD, "bulk-files/",
+          tb_path_CAMPD_hourly_NC_2023$s3Path
+          ),
+    n_max = 1
+  ) %>% 
+  colnames()
+
+length_headers <- length(ls_col_headers)
+
+kable(
+  tibble(
+    headers1 = ls_col_headers[1:floor(length_headers/2)],
+    headers2 = ls_col_headers[(floor(length_headers/2) + 1):length_headers])
+  )
+```
+
+Much faster to download bulk data to drive then read what I need from drive. Could be made even quicker by doing pre-filtering with duckplyr and parquet files or something.
+
+```{r}
+#| label: read-csv-partial
+
+ls_col_names <- c("State", "Facility Name", "Facility ID", "Unit ID",
+                  "Date", "Hour", "Operating Time", "NOx Rate (lbs/mmBtu)")
+
+tb_CAMPD_hourly_NC_2023 <-
+  read_csv(
+    str_c(urlbase_CAMPD, "bulk-files/", tb_path_CAMPD_hourly_NC_2023$s3Path),
+    col_select = all_of(ls_col_names)
+    )
+
+tb_CAMPD_hourly_NC_2023 <-
+  read_csv(
+    "data/emissions-hourly-2023-nc.csv",
+    col_select = all_of(ls_col_names)
+    )
+```
+
+Should further limit data pull to just a single duplicative column (e.g. *Facility ID*). Other ID (like *State* and *Facility Name*) columns can be joined later.
